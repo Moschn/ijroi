@@ -3,9 +3,10 @@
 # License: MIT
 
 import numpy as np
+from math import floor
 
 
-def read_roi(fileobj):
+def read_roi(fileobj, shape):
     '''
     points = read_roi(fileobj)
 
@@ -59,6 +60,58 @@ def read_roi(fileobj):
         v = np.int32(get32())
         return v.view(np.float32)
 
+    def ellipse(top, left, widthd, heightd, shape):
+        xm = top + widthd//2
+        ym = left + heightd//2
+
+        x = np.arange(0, shape[0])
+        y = np.arange(0, shape[1])[:, None]
+        ellipse = ((x-xm)/widthd*2)**2 + ((y-ym)/heightd*2)**2
+
+        return ellipse <= 1
+
+    def line(arr, x0, y0, x1, y1):
+        "Bresenham's line algorithm"
+        dx = abs(x1 - x0)
+        dy = abs(y1 - y0)
+        x, y = x0, y0
+        sx = -1 if x0 > x1 else 1
+        sy = -1 if y0 > y1 else 1
+        if dx > dy:
+            err = dx / 2.0
+            while x != x1:
+                arr[x, y] = True
+                err -= dy
+                if err < 0:
+                    y += sy
+                    err += dx
+                x += sx
+        else:
+            err = dy / 2.0
+            while y != y1:
+                arr[x, y] = True
+                err -= dx
+                if err < 0:
+                    x += sx
+                    err += dy
+                y += sy        
+        arr[x, y] = True
+        return arr
+
+    def floodFill(x, y, arr):
+        toFill = set()
+        toFill.add((x, y))
+        while len(toFill) > 0:
+            (x, y) = toFill.pop()
+            if arr[x, y]:
+                continue
+            arr[x, y] = True
+            toFill.add((x-1, y))
+            toFill.add((x+1, y))
+            toFill.add((x, y-1))
+            toFill.add((x, y+1))
+        return arr
+
     magic = fileobj.read(4)
     if magic != b'Iout':
         raise ValueError('Magic number not found')
@@ -69,8 +122,10 @@ def read_roi(fileobj):
     # Discard second Byte:
     get8()
 
-    if roi_type not in [RoiType.FREEHAND, RoiType.POLYGON, RoiType.RECT, RoiType.POINT]:
-        raise NotImplementedError('roireader: ROI type %s not supported' % roi_type)
+    if roi_type not in [RoiType.FREEHAND, RoiType.POLYGON, RoiType.RECT,
+                        RoiType.POINT, RoiType.OVAL]:
+        raise NotImplementedError('roireader: ROI type %s not supported'
+                                  % roi_type)
 
     top = get16()
     left = get16()
@@ -97,13 +152,22 @@ def read_roi(fileobj):
 
     if roi_type == RoiType.RECT:
         if options & SUB_PIXEL_RESOLUTION:
-            return np.array(
-                [[y1, x1], [y1, x1+x2], [y1+y2, x1+x2], [y1+y2, x1]],
-                dtype=np.float32)
+            result = np.zeros((x1+x2, y1+y2)) > 0
+            for i in range(x1, x1+x2):
+                for j in range(y1, y1+y2):
+                    result[i, j] = True
+            return result
         else:
-            return np.array(
-                [[top, left], [top, right], [bottom, right], [bottom, left]],
-                dtype=np.int16)
+            result = np.zeros((bottom, right)) > 0
+            for i in range(top, bottom):
+                for j in range(left, right):
+                    result[i, j] = True
+            return result
+    elif roi_type == RoiType.OVAL:
+        if options & SUB_PIXEL_RESOLUTION:
+            return ellipse(x1, y1, x2, y2)
+        else:
+            return ellipse(top, left, bottom, right)
 
     if options & SUB_PIXEL_RESOLUTION:
         getc = getfloat
@@ -119,6 +183,24 @@ def read_roi(fileobj):
     if options & SUB_PIXEL_RESOLUTION == 0:
         points[:, 1] += left
         points[:, 0] += top
+
+    arr = np.zeros(shape) > 0
+    for idx, p1 in enumerate(points):
+        p2 = points[(idx+1) % len(points)]
+        arr = line(arr, p1[0], p1[1], p2[0], p2[1])
+
+    print(np.mean(points[:, 0]), np.mean(points[:, 1]))
+    arr = floodFill(floor(np.mean(points[:, 0])), floor(np.mean(points[:, 1])),
+                    arr)
+    arr[floor(np.mean(points[:, 0])), floor(np.mean(points[:, 1]))] = True
+
+    # check if there are more values in the roi than oustside
+    if np.sum(arr) > shape[0]*shape[1]:
+        arr = not arr
+
+    from matplotlib import pyplot
+    pyplot.imshow(arr)
+    pyplot.show()
 
     return points
 
