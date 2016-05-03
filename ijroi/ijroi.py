@@ -3,7 +3,7 @@
 # License: MIT
 
 import numpy as np
-from math import floor
+from math import floor, sqrt, atan2, cos, sin
 
 
 def read_roi(fileobj, shape):
@@ -60,13 +60,10 @@ def read_roi(fileobj, shape):
         v = np.int32(get32())
         return v.view(np.float32)
 
-    def ellipse(top, left, widthd, heightd, shape):
-        xm = top + widthd//2
-        ym = left + heightd//2
-
+    def ellipse(xm, ym, widthd, heightd, angle, shape):
         x = np.arange(0, shape[0])
         y = np.arange(0, shape[1])[:, None]
-        ellipse = ((x-xm)/widthd*2)**2 + ((y-ym)/heightd*2)**2
+        ellipse = (((x-xm)*cos(angle)+(y-ym)*sin(angle))/widthd*2)**2 + (((x-xm)*sin(angle)-(y-ym)*cos(angle))/heightd*2)**2
 
         return ellipse <= 1
 
@@ -141,7 +138,7 @@ def read_roi(fileobj, shape):
     stroke_color = get32()
     fill_color = get32()
     subtype = get16()
-    if subtype != 0:
+    if subtype != 0 and not (subtype == 3 and roi_type == RoiType.FREEHAND):
         raise NotImplementedError('roireader: ROI subtype %s not supported (!= 0)' % subtype)
     options = get16()
     arrow_style = get8()
@@ -165,9 +162,29 @@ def read_roi(fileobj, shape):
             return result
     elif roi_type == RoiType.OVAL:
         if options & SUB_PIXEL_RESOLUTION:
-            return ellipse(x1, y1, x2, y2)
+            xm = x1 + (x1 + x2)//2
+            ym = y1 + (y1 + y2)//2
+            return ellipse(xm, ym, x2, y2, 0, shape)
         else:
-            return ellipse(top, left, bottom, right)
+            xm = top + bottom//2
+            ym = left + right//2
+            return ellipse(xm, ym, bottom, right, 0, shape)
+
+    elif roi_type == RoiType.FREEHAND and subtype == 3:
+        ex1 = float(x1)
+        ey1 = float(y1)
+        ex2 = float(x2)
+        ey2 = float(y2)
+        v = np.int32((arrow_style << 24) | (arrow_head_size << 16) |
+                     rect_arc_size)
+        aspect_ratio = v.view(np.float32)
+
+        xm = ex1 + abs(ex1 - ex2)//2
+        ym = ey1 + abs(ey1 - ey2)//2
+        widthd = sqrt(abs(ex1-ex2)**2 + abs(ey1-ey2)**2)
+        heightd = aspect_ratio * widthd
+        angle = atan2(top-bottom, left-right)
+        return ellipse(xm, ym, widthd, heightd, angle, shape)
 
     if options & SUB_PIXEL_RESOLUTION:
         getc = getfloat
@@ -189,23 +206,21 @@ def read_roi(fileobj, shape):
         p2 = points[(idx+1) % len(points)]
         arr = line(arr, p1[0], p1[1], p2[0], p2[1])
 
-    print(np.mean(points[:, 0]), np.mean(points[:, 1]))
     arr = floodFill(floor(np.mean(points[:, 0])), floor(np.mean(points[:, 1])),
                     arr)
-    arr[floor(np.mean(points[:, 0])), floor(np.mean(points[:, 1]))] = True
 
     # check if there are more values in the roi than oustside
     if np.sum(arr) > shape[0]*shape[1]:
         arr = not arr
 
-    from matplotlib import pyplot
-    pyplot.imshow(arr)
-    pyplot.show()
+    # from matplotlib import pyplot
+    # pyplot.imshow(arr)
+    # pyplot.show()
 
-    return points
+    return arr
 
 
-def read_roi_zip(fname):
+def read_roi_zip(fname, shape):
     import zipfile
     with zipfile.ZipFile(fname) as zf:
-        return [(n, read_roi(zf.open(n))) for n in zf.namelist()]
+        return [(n, read_roi(zf.open(n), shape)) for n in zf.namelist()]
